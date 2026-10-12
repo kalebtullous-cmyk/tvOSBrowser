@@ -1,0 +1,69 @@
+name: Build Apple TV Browser
+
+# Run it by hand from the Actions tab
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Pick the newest Xcode on the runner
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          echo "Using $XC"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Build the app (unsigned)
+        run: |
+          build() {
+            xcodebuild \
+              -project _Project/Browser.xcodeproj \
+              -target Browser \
+              -configuration Release \
+              -sdk appletvos \
+              SYMROOT="$PWD/build" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              build
+          }
+          if ! build; then
+            echo "First try failed - installing the tvOS platform and retrying"
+            xcodebuild -downloadPlatform tvOS
+            build
+          fi
+
+      - name: Package it as an .ipa
+        run: |
+          APP=build/Release-appletvos/Browser.app
+          test -d "$APP" || { echo "Built app not found"; ls -R build | head -50; exit 1; }
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry tvOSBrowser.ipa Payload
+          ls -lh tvOSBrowser.ipa
+
+      - name: Save the .ipa (Artifacts section of this run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvOSBrowser-ipa
+          path: tvOSBrowser.ipa
+
+      - name: Also post it under Releases for a direct download
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${GITHUB_RUN_NUMBER}" tvOSBrowser.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "tvOS Browser build ${GITHUB_RUN_NUMBER}" \
+            --notes "Unsigned build. Install it on your Apple TV with Sideloadly."
